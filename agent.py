@@ -8,6 +8,7 @@ import sys
 import os
 import json
 import re
+from collections import Counter
 
 from openai import OpenAI
 
@@ -31,6 +32,11 @@ def parse_grid(raw_output):
     return json.loads(raw_output)
 
 
+def grid_to_key(grid):
+    """Convert grid to hashable key for voting."""
+    return json.dumps(grid)
+
+
 def solve(fewshots: list, test_input: list) -> list:
     """Given few-shot examples and a test input grid, predict the output grid."""
     client = OpenAI()
@@ -45,47 +51,54 @@ def solve(fewshots: list, test_input: list) -> list:
         {"role": "user", "content": f"{examples}Now predict the output for:\nInput:\n{json.dumps(test_input)}"},
     ]
 
-    all_raw = []
+    candidates = []
+    last_response = None
 
-    # Best of 2: try medium reasoning twice, collect valid results
-    for attempt in range(2):
-        response = call_model(client, model, messages, effort="medium")
+    # 3 attempts with medium reasoning
+    for _ in range(3):
+        try:
+            response = call_model(client, model, messages, effort="medium")
+            last_response = response
+            raw = response.output_text.strip()
+            if raw:
+                grid = parse_grid(raw)
+                candidates.append(grid)
+        except Exception:
+            pass
+
+    # If no valid candidates, try with low reasoning + more tokens
+    if not candidates:
+        response = call_model(client, model, messages, effort="low", max_tokens=32768)
+        last_response = response
         raw = response.output_text.strip()
         if raw:
-            try:
-                grid = parse_grid(raw)
-                all_raw.append(raw)
-                # Save trajectory on first valid result
-                _save_trajectory(response, model, messages, raw)
-                return grid
-            except (json.JSONDecodeError, ValueError):
-                all_raw.append(raw)
+            candidates.append(parse_grid(raw))
 
-    # All medium attempts truncated/failed — retry with low reasoning + more tokens
-    response = call_model(client, model, messages, effort="low", max_tokens=32768)
-    raw = response.output_text.strip()
-    all_raw.append(raw)
-    _save_trajectory(response, model, messages, "\n---\n".join(all_raw))
-    return parse_grid(raw)
-
-
-def _save_trajectory(response, model, messages, raw_output):
+    # Save trajectory
     traj_dir = os.environ.get("EVAL_TRAJECTORY_DIR")
     idx = os.environ.get("EVAL_INDEX")
-    if traj_dir and idx is not None:
+    if traj_dir and idx is not None and last_response:
         os.makedirs(traj_dir, exist_ok=True)
         trajectory = {
             "index": int(idx),
             "model": model,
             "messages": messages,
-            "raw_response": raw_output,
+            "raw_response": f"{len(candidates)} candidates collected",
             "usage": {
-                "input_tokens": response.usage.input_tokens if response.usage else None,
-                "output_tokens": response.usage.output_tokens if response.usage else None,
+                "input_tokens": last_response.usage.input_tokens if last_response.usage else None,
+                "output_tokens": last_response.usage.output_tokens if last_response.usage else None,
             },
         }
         with open(os.path.join(traj_dir, f"{idx}.json"), "w") as f:
             json.dump(trajectory, f, indent=2)
+
+    if not candidates:
+        raise ValueError("No valid candidates produced")
+
+    # Majority vote
+    votes = Counter(grid_to_key(g) for g in candidates)
+    best_key = votes.most_common(1)[0][0]
+    return json.loads(best_key)
 
 
 if __name__ == "__main__":
