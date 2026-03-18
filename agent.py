@@ -45,16 +45,31 @@ def solve(fewshots: list, test_input: list) -> list:
         {"role": "user", "content": f"{examples}Now predict the output for:\nInput:\n{json.dumps(test_input)}"},
     ]
 
-    # Try medium reasoning first
-    response = call_model(client, model, messages, effort="medium")
-    raw_output = response.output_text.strip()
+    all_raw = []
 
-    # If empty response (truncated by reasoning), retry with low reasoning effort
-    if not raw_output:
-        response = call_model(client, model, messages, effort="low", max_tokens=32768)
-        raw_output = response.output_text.strip()
+    # Best of 2: try medium reasoning twice, collect valid results
+    for attempt in range(2):
+        response = call_model(client, model, messages, effort="medium")
+        raw = response.output_text.strip()
+        if raw:
+            try:
+                grid = parse_grid(raw)
+                all_raw.append(raw)
+                # Save trajectory on first valid result
+                _save_trajectory(response, model, messages, raw)
+                return grid
+            except (json.JSONDecodeError, ValueError):
+                all_raw.append(raw)
 
-    # Save trajectory if requested
+    # All medium attempts truncated/failed — retry with low reasoning + more tokens
+    response = call_model(client, model, messages, effort="low", max_tokens=32768)
+    raw = response.output_text.strip()
+    all_raw.append(raw)
+    _save_trajectory(response, model, messages, "\n---\n".join(all_raw))
+    return parse_grid(raw)
+
+
+def _save_trajectory(response, model, messages, raw_output):
     traj_dir = os.environ.get("EVAL_TRAJECTORY_DIR")
     idx = os.environ.get("EVAL_INDEX")
     if traj_dir and idx is not None:
@@ -71,8 +86,6 @@ def solve(fewshots: list, test_input: list) -> list:
         }
         with open(os.path.join(traj_dir, f"{idx}.json"), "w") as f:
             json.dump(trajectory, f, indent=2)
-
-    return parse_grid(raw_output)
 
 
 if __name__ == "__main__":
