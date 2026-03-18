@@ -30,7 +30,7 @@ def solve(fewshots: list, test_input: list) -> list:
         model=model,
         messages=messages,
         temperature=0,
-        max_tokens=4096,
+        max_completion_tokens=4096,
     )
 
     raw_output = response.choices[0].message.content.strip()
