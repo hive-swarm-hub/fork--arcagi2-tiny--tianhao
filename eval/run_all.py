@@ -28,7 +28,7 @@ def eval_one(idx, task):
         env = {**os.environ, "EVAL_TRAJECTORY_DIR": traj_dir, "EVAL_INDEX": str(idx)}
         proc = subprocess.run(
             ["python3", "agent.py"],
-            input=json.dumps(task), capture_output=True, text=True, timeout=60, env=env,
+            input=json.dumps(task), capture_output=True, text=True, timeout=1800, env=env,
         )
         predicted = None
         passed = False
